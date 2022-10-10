@@ -48,11 +48,11 @@ func GetQueryStr() string {
 		return ""
 	}
 	res, err := client.Do(req)
-	defer res.Body.Close()
 	if err != nil {
 		fmt.Println(err)
 		return ""
 	}
+	defer res.Body.Close()
 
 	body, err := io.ReadAll(res.Body)
 	if err != nil {
@@ -81,11 +81,11 @@ func Login(paras *Paras) {
 	}
 
 	res, err := client.Do(req)
-	defer res.Body.Close()
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
+	defer res.Body.Close()
 
 	body, err := io.ReadAll(res.Body)
 	if err != nil {
