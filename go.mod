@@ -1,4 +1,4 @@
-module net
+module github.com/CjiW/hust_net
 
 go 1.19
 
