@@ -3,17 +3,67 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/dlclark/regexp2"
 	"github.com/google/go-querystring/query"
 	"io"
+	"math/big"
 	"net/http"
+	url2 "net/url"
 	"os"
+	"strconv"
+	"strings"
 )
 
 type Paras struct {
+	Userid string `json:"userid"`
+	Passwd string `json:"passwd"`
+}
+
+// ReadConf 读取配置
+func ReadConf(filename string) *Paras {
+	paras := Paras{}
+	data, _ := os.ReadFile(filename)
+	json.Unmarshal(data, &paras)
+	return &paras
+}
+
+// GetQueryStr 从 123.123.123.123 获取状态信息
+func GetQueryStr() string {
+	url := "http://123.123.123.123"
+	client := &http.Client{}
+	req, _ := http.NewRequest("GET", url, nil)
+	res, _ := client.Do(req)
+	defer res.Body.Close()
+	data, _ := io.ReadAll(res.Body)
+	body := string(data)
+	ret := strings.Split(strings.Split(body, "'")[1], "?")[1]
+	return ret
+}
+
+type PubKey struct {
+	PublicKeyExponent string `json:"publicKeyExponent"`
+	PublicKeyModulus  string `json:"publicKeyModulus"`
+}
+
+// GetPubKey 通过请求 192.168.50.3:8080 获取公钥信息
+func GetPubKey(queryStr string) PubKey {
+	url := "http://192.168.50.3:8080/eportal/InterFace.do?method=pageInfo"
+	client := &http.Client{}
+	ule := "queryString=" + url2.QueryEscape(queryStr)
+	bd := strings.NewReader(ule)
+	req, _ := http.NewRequest("POST", url, bd)
+	req.Header.Add("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
+	res, _ := client.Do(req)
+	defer res.Body.Close()
+	data, _ := io.ReadAll(res.Body)
+	var pk PubKey
+	json.Unmarshal(data, &pk)
+	return pk
+}
+
+type LoginPara struct {
 	Method          string `url:"method"`
-	Userid          string `url:"userId" json:"userid"`
-	Passwd          string `url:"password" json:"passwd"`
+	Userid          string `url:"userId"`
+	Passwd          string `url:"password"`
 	QueryStr        string `url:"queryString"`
 	PasswordEncrypt string `url:"passwordEncrypt"`
 	Service         string `url:"service"`
@@ -21,88 +71,53 @@ type Paras struct {
 	Validcode       string `url:"validcode"`
 }
 
-func ReadConf(filename string) *Paras {
-	paras := Paras{}
-	data, err := os.ReadFile(filename)
-	if err != nil {
-		fmt.Println(err)
-		return nil
-	}
-
-	err = json.Unmarshal(data, &paras)
-	if err != nil {
-		fmt.Println(err)
-		return nil
-	}
-	paras.Method = "login"
-	paras.PasswordEncrypt = "false"
-	return &paras
-}
-
-// GetQueryStr 通过请求 123.123.123.123 获取设备信息
-func GetQueryStr() string {
-	client := &http.Client{}
-	req, err := http.NewRequest("GET", "http://123.123.123.123:80", nil)
-	if err != nil {
-		fmt.Println(err)
-		return ""
-	}
-	res, err := client.Do(req)
-	if err != nil {
-		fmt.Println(err)
-		return ""
-	}
-	defer res.Body.Close()
-
-	body, err := io.ReadAll(res.Body)
-	if err != nil {
-		fmt.Println(err)
-		return ""
-	}
-	tmp1 := string(body)
-	cond := regexp2.MustCompile("(?<=(\\?))(.*)(?=')", 0)
-	mat, err := cond.FindStringMatch(tmp1)
-	if err != nil {
-		fmt.Println(err)
-		return ""
-	}
-	return mat.String()
-}
-
 // Login 登录请求，参数有 账户信息，设备信息等
-func Login(paras *Paras) {
+func Login(paras *LoginPara) {
 	para, _ := query.Values(paras)
-	u := "http://172.18.18.60:8080/eportal/InterFace.do?" + para.Encode()
+	u := "http://192.168.50.3:8080/eportal/InterFace.do?" + para.Encode()
 	client := &http.Client{}
-	req, err := http.NewRequest("POST", u, nil)
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
+	req, _ := http.NewRequest("POST", u, nil)
 
-	res, err := client.Do(req)
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
+	res, _ := client.Do(req)
 	defer res.Body.Close()
 
-	body, err := io.ReadAll(res.Body)
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-
+	body, _ := io.ReadAll(res.Body)
 	fmt.Println(string(body))
 }
+
 func main() {
 	paras := ReadConf("./login.json")
-	if paras == nil {
-		return
+	queryStr := GetQueryStr()
+	pk := GetPubKey(queryStr)
+	E, _ := strconv.ParseInt(pk.PublicKeyExponent, 16, 64)
+
+	parseQuery, _ := url2.ParseQuery(queryStr)
+	msg := paras.Passwd + ">" + parseQuery["mac"][0]
+	encryptData := EncryptData(pk.PublicKeyModulus, E, msg)
+	loginPara := LoginPara{
+		Method:          "login",
+		Userid:          paras.Userid,
+		Passwd:          encryptData,
+		QueryStr:        queryStr,
+		PasswordEncrypt: "true",
+		Service:         "",
+		OperatorPwd:     "",
+		Validcode:       "",
 	}
-	paras.QueryStr = GetQueryStr()
-	if len(paras.QueryStr) == 0 {
-		return
+	Login(&loginPara)
+}
+
+// EncryptData RSA 公钥加密 res = msg ^ e mod m
+func EncryptData(modulus string, e int64, msg string) string {
+	N := new(big.Int)
+	N.SetString(modulus, 16)
+	E := big.NewInt(e)
+	msgNum := big.NewInt(0)
+	msgLen := len(msg)
+	for i := 0; i < msgLen; i++ {
+		ch := big.NewInt(int64(msg[msgLen-i-1]))
+		ch.Lsh(ch, uint(8*i))
+		msgNum.Add(msgNum, ch)
 	}
-	Login(paras)
+	return fmt.Sprintf("%x", msgNum.Exp(msgNum, E, N))
 }
